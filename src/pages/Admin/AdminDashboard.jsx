@@ -20,9 +20,27 @@ const AdminDashboard = () => {
     video_url: ''
   });
 
-    const ApiUrl = 'https://interiorserverfinal.onrender.com'
+  // Use environment variable or fallback
+  // const ApiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+  const ApiUrl = import.meta.env.VITE_API_URL || 'https://interiorservermongo.onrender.com';
 
-  // const ApiUrl = 'http://localhost:5000';
+  // FIXED: Better file URL handler for relative paths
+  const getFullFileUrl = (filePath) => {
+    if (!filePath) return '';
+    
+    // If it's already a full URL, return as is
+    if (filePath.startsWith('http')) {
+      return filePath;
+    }
+    
+    // If it's a relative path starting with /uploads, prepend API URL
+    if (filePath.startsWith('/uploads')) {
+      return `${ApiUrl}${filePath}`;
+    }
+    
+    // Default case - assume it's in uploads folder
+    return `${ApiUrl}/uploads/${filePath}`;
+  };
 
   const categories = ['Electronics', 'Footwear', 'Clothing', 'Home', 'Sports', 'Books', 'Other'];
   const brands = ['AudioTech', 'TechWear', 'SportFit', 'HomeEssentials', 'BookWorld', 'Other'];
@@ -34,15 +52,41 @@ const AdminDashboard = () => {
   const fetchProducts = async () => {
     try {
       const response = await axios.get(`${ApiUrl}/api/products`);
-      setProducts(response.data.data);
       
-      console.log("=== ALL PRODUCTS ===");
-      response.data.data.forEach((product, index) => {
-        console.log(`${index + 1}. ID: ${product.id}, Name: ${product.product_name}`);
+      console.log("=== FULL API RESPONSE ===");
+      console.log("Response data:", response.data);
+      
+      // Check if data is in response.data or response.data.data
+      let productsData = response.data;
+      
+      if (response.data && response.data.data && Array.isArray(response.data.data)) {
+        productsData = response.data.data;
+      } else if (!Array.isArray(response.data)) {
+        console.error("Unexpected response structure:", response.data);
+        productsData = [];
+      }
+      
+      // Ensure each product has a unique ID
+      const productsWithIds = productsData.map((product, index) => {
+        // Try to get ID from various possible fields
+        const id = product._id || product.id || `product-${index}-${Date.now()}`;
+        
+        return {
+          ...product,
+          id: id // Ensure id property exists
+        };
+      });
+      
+      setProducts(productsWithIds);
+      
+      console.log("=== PROCESSED PRODUCTS ===");
+      productsWithIds.forEach((product, index) => {
+        console.log(`${index + 1}. ID: ${product.id}, Name: ${product.product_name}, Image: ${product.image_url}`);
       });
       
     } catch (error) {
       console.error('Error fetching products:', error);
+      setProducts([]); // Set empty array on error
     } finally {
       setLoading(false);
     }
@@ -56,57 +100,62 @@ const AdminDashboard = () => {
     }));
   };
 
-const handleFileUpload = async (e, type) => {
-  const file = e.target.files[0];
-  if (!file) return;
+  const handleFileUpload = async (e, type) => {
+    const file = e.target.files[0];
+    if (!file) return;
 
-  if (file.size > 50 * 1024 * 1024) {
-    alert('File size too large. Maximum size is 50MB.');
-    return;
-  }
-
-  setUploading(true);
-  const uploadData = new FormData();
-  uploadData.append('file', file);
-
-  try {
-    console.log("🔼 Starting file upload...", file.name);
-    
-    // FIX: Use ApiUrl variable instead of hardcoded localhost
-    const response = await axios.post(`${ApiUrl}/api/upload`, uploadData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      timeout: 30000,
-    });
-    
-    console.log("✅ Upload response:", response.data);
-    
-    if (response.data.success) {
-      setFormData(prev => ({
-        ...prev,
-        [type === 'image' ? 'image_url' : 'video_url']: response.data.filePath
-      }));
-      alert('File uploaded successfully!');
-    } else {
-      throw new Error(response.data.error || 'Upload failed');
+    if (file.size > 50 * 1024 * 1024) {
+      alert('File size too large. Maximum size is 50MB.');
+      return;
     }
-  } catch (error) {
-    console.error('❌ Error uploading file:', error);
-    alert(`Upload error: ${error.response?.data?.error || error.message}`);
-  } finally {
-    setUploading(false);
-    e.target.value = '';
-  }
-};
+
+    setUploading(true);
+    const uploadData = new FormData();
+    uploadData.append('file', file);
+
+    try {
+      console.log("🔼 Starting file upload...", file.name);
+      
+      const response = await axios.post(`${ApiUrl}/api/upload`, uploadData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        timeout: 60000,
+      });
+      
+      console.log("✅ Upload response:", response.data);
+      
+      if (response.data.success) {
+        // Store the relative path returned from server
+        setFormData(prev => ({
+          ...prev,
+          [type === 'image' ? 'image_url' : 'video_url']: response.data.filePath
+        }));
+        alert('File uploaded successfully!');
+      } else {
+        throw new Error(response.data.error || 'Upload failed');
+      }
+    } catch (error) {
+      console.error('❌ Error uploading file:', error);
+      alert(`Upload error: ${error.response?.data?.error || error.message}`);
+    } finally {
+      setUploading(false);
+      e.target.value = '';
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
+      const submitData = {
+        ...formData,
+        price_new: parseFloat(formData.price_new)
+      };
+
       if (editingProduct) {
-        // FIX: Use editingProduct.id instead of product_id
-        await axios.put(`${ApiUrl}/api/products/${editingProduct.id}`, formData);
+        await axios.put(`${ApiUrl}/api/products/${editingProduct.id}`, submitData);
       } else {
-        await axios.post(`${ApiUrl}/api/products`, formData);
+        await axios.post(`${ApiUrl}/api/products`, submitData);
       }
       fetchProducts();
       resetForm();
@@ -134,7 +183,6 @@ const handleFileUpload = async (e, type) => {
   const handleDelete = async (productId) => {
     if (window.confirm('Are you sure you want to delete this product?')) {
       try {
-        // FIX: Use product.id directly
         await axios.delete(`${ApiUrl}/api/products/${productId}`);
         fetchProducts();
         alert('Product deleted successfully!');
@@ -165,6 +213,22 @@ const handleFileUpload = async (e, type) => {
     } else {
       setActiveVideo(productId);
     }
+  };
+
+  // Helper function to generate a unique key for each product
+  const generateProductKey = (product, index) => {
+    // Try to use the product ID first
+    if (product.id && product.id !== 'undefined') {
+      return product.id;
+    }
+    
+    // Fallback to a combination of properties
+    if (product.product_name && product.image_url) {
+      return `${product.product_name}-${product.image_url}-${index}`;
+    }
+    
+    // Final fallback - index with timestamp
+    return `product-${index}-${Date.now()}`;
   };
 
   return (
@@ -271,14 +335,7 @@ const handleFileUpload = async (e, type) => {
 
                 <div className="form-row">
                   <div className="form-group">
-                    <label>Image URL</label>
-                    <input
-                      type="text"
-                      name="image_url"
-                      value={formData.image_url}
-                      onChange={handleInputChange}
-                      placeholder="Or upload image below"
-                    />
+                    <label>Image</label>
                     <input
                       type="file"
                       accept="image/*"
@@ -287,20 +344,21 @@ const handleFileUpload = async (e, type) => {
                     />
                     {formData.image_url && (
                       <div className="image-preview">
-                        <img src={formData.image_url} alt="Preview" />
+                        <img 
+                          src={getFullFileUrl(formData.image_url)} 
+                          alt="Preview" 
+                          onError={(e) => {
+                            console.error('Image failed to load:', formData.image_url);
+                            e.target.style.display = 'none';
+                          }}
+                        />
+                        <small>Stored path: {formData.image_url}</small>
                       </div>
                     )}
                   </div>
                   
                   <div className="form-group">
-                    <label>Video URL</label>
-                    <input
-                      type="text"
-                      name="video_url"
-                      value={formData.video_url}
-                      onChange={handleInputChange}
-                      placeholder="Or upload video below"
-                    />
+                    <label>Video</label>
                     <input
                       type="file"
                       accept="video/*"
@@ -314,7 +372,7 @@ const handleFileUpload = async (e, type) => {
                           controls 
                           style={{ maxWidth: '200px', maxHeight: '150px' }}
                         >
-                          <source src={formData.video_url} type="video/mp4" />
+                          <source src={getFullFileUrl(formData.video_url)} type="video/mp4" />
                           Your browser does not support the video tag.
                         </video>
                       </div>
@@ -344,101 +402,117 @@ const handleFileUpload = async (e, type) => {
           <h2>Products ({products.length})</h2>
           {loading ? (
             <div className="loading">Loading products...</div>
+          ) : products.length === 0 ? (
+            <div className="no-products">
+              <p>No products found. Add your first product!</p>
+            </div>
           ) : (
             <div className="products-grid">
-              {products.map(product => (
-                <motion.div 
-                  key={product.id} 
-                  className="admin-product-card"
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.3 }}
-                >
-                  <div className="product-media">
-                    {product.video_url && activeVideo === product.id ? (
-                      <div className="video-container">
-                        <video 
-                          controls 
-                          autoPlay
-                          style={{ width: '100%', height: '200px', objectFit: 'cover' }}
-                        >
-                          <source src={product.video_url} type="video/mp4" />
-                          Your browser does not support the video tag.
-                        </video>
-                        <button 
-                          className="btn btn-secondary btn-small"
-                          onClick={() => setActiveVideo(null)}
-                          style={{ marginTop: '10px' }}
-                        >
-                          Stop Video
-                        </button>
-                      </div>
-                    ) : product.image_url ? (
-                      <div className="image-container">
-                        <img 
-                          src={product.image_url} 
-                          alt={product.product_name}
-                          className="product-image"
-                        />
-                        {product.video_url && (
-                          <button 
-                            className="btn btn-primary btn-small video-play-btn"
-                            onClick={() => playVideo(product.id, product.video_url)}
+              {products.map((product, index) => {
+                // Generate a unique key for each product
+                const uniqueKey = generateProductKey(product, index);
+                
+                return (
+                  <motion.div 
+                    key={uniqueKey}  // FIXED: Using unique key instead of product.id
+                    className="admin-product-card"
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.3 }}
+                    layout
+                  >
+                    <div className="product-media">
+                      {product.video_url && activeVideo === uniqueKey ? (
+                        <div className="video-container">
+                          <video 
+                            controls 
+                            autoPlay
+                            style={{ width: '100%', height: '200px', objectFit: 'cover' }}
                           >
-                            ▶ Play Video
-                          </button>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="no-media">
-                        <div className="no-image">No Image</div>
-                        {product.video_url && (
+                            <source src={getFullFileUrl(product.video_url)} type="video/mp4" />
+                            Your browser does not support the video tag.
+                          </video>
                           <button 
-                            className="btn btn-primary btn-small"
-                            onClick={() => playVideo(product.id, product.video_url)}
+                            className="btn btn-secondary btn-small"
+                            onClick={() => setActiveVideo(null)}
                             style={{ marginTop: '10px' }}
                           >
-                            ▶ Play Video
+                            Stop Video
                           </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  
-                  <div className="product-info">
-                    <h3>{product.product_name}</h3>
-                    <p className="product-brand">{product.brand}</p>
-                    <p className="product-category">{product.category}</p>
-                    <p className="product-price">${product.price_new}</p>
-                    <p className="product-id">ID: {product.id}</p>
+                        </div>
+                      ) : product.image_url ? (
+                        <div className="image-container">
+                          <img 
+                            src={getFullFileUrl(product.image_url)} 
+                            alt={product.product_name}
+                            className="product-image"
+                            onError={(e) => {
+                              console.error('Failed to load image for product:', product.product_name, 'URL:', product.image_url);
+                              e.target.src = '/placeholder-image.jpg';
+                              e.target.alt = 'Image not available';
+                            }}
+                          />
+                          {product.video_url && (
+                            <button 
+                              className="btn btn-primary btn-small video-play-btn"
+                              onClick={() => playVideo(uniqueKey, product.video_url)}
+                            >
+                              ▶ Play Video
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="no-media">
+                          <div className="no-image">No Image</div>
+                          {product.video_url && (
+                            <button 
+                              className="btn btn-primary btn-small"
+                              onClick={() => playVideo(uniqueKey, product.video_url)}
+                              style={{ marginTop: '10px' }}
+                            >
+                              ▶ Play Video
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
                     
-                    {product.video_url && (
-                      <div className="video-info">
-                        <small>Video Available</small>
-                      </div>
-                    )}
+                    <div className="product-info">
+                      <h3>{product.product_name}</h3>
+                      <p className="product-brand">{product.brand}</p>
+                      <p className="product-category">{product.category}</p>
+                      <p className="product-price">${product.price_new}</p>
+                      <p className="product-id">ID: {product.id || 'N/A'}</p>
+                      
+                      {product.video_url && (
+                        <div className="video-info">
+                          <small>Video Available</small>
+                        </div>
+                      )}
+                      
+                      {product.description && (
+                        <p className="product-description">{product.description}</p>
+                      )}
+                    </div>
                     
-                    {product.description && (
-                      <p className="product-description">{product.description}</p>
-                    )}
-                  </div>
-                  
-                  <div className="product-actions">
-                    <button 
-                      className="btn btn-edit"
-                      onClick={() => handleEdit(product)}
-                    >
-                      Edit
-                    </button>
-                    <button 
-                      className="btn btn-delete"
-                      onClick={() => handleDelete(product.id)}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </motion.div>
-              ))}
+                    <div className="product-actions">
+                      <button 
+                        className="btn btn-edit"
+                        onClick={() => handleEdit(product)}
+                      >
+                        Edit
+                      </button>
+                      <button 
+                        className="btn btn-delete"
+                        onClick={() => handleDelete(product.id)}
+                        disabled={!product.id || product.id === 'undefined'}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </motion.div>
+                );
+              })}
             </div>
           )}
         </div>
