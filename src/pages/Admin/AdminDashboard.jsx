@@ -9,6 +9,7 @@ const AdminDashboard = () => {
   const [showForm, setShowForm] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [activeVideo, setActiveVideo] = useState(null);
   const [formData, setFormData] = useState({
     product_name: '',
@@ -21,25 +22,14 @@ const AdminDashboard = () => {
   });
 
   // Use environment variable or fallback
-  // const ApiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
-  const ApiUrl = import.meta.env.VITE_API_URL || 'https://interiorservermongo.onrender.com';
+  // const ApiUrl = 'http://localhost:5000';
+  const ApiUrl = '  https://interiorservermongo.onrender.com';
 
-  // FIXED: Better file URL handler for relative paths
-  const getFullFileUrl = (filePath) => {
-    if (!filePath) return '';
-    
-    // If it's already a full URL, return as is
-    if (filePath.startsWith('http')) {
-      return filePath;
-    }
-    
-    // If it's a relative path starting with /uploads, prepend API URL
-    if (filePath.startsWith('/uploads')) {
-      return `${ApiUrl}${filePath}`;
-    }
-    
-    // Default case - assume it's in uploads folder
-    return `${ApiUrl}/uploads/${filePath}`;
+
+  // Cloudinary URLs are already full URLs
+  const getFullFileUrl = (url) => {
+    if (!url) return '';
+    return url;
   };
 
   const categories = ['Electronics', 'Footwear', 'Clothing', 'Home', 'Sports', 'Books', 'Other'];
@@ -50,43 +40,46 @@ const AdminDashboard = () => {
   }, []);
 
   const fetchProducts = async () => {
+    setLoading(true);
     try {
-      const response = await axios.get(`${ApiUrl}/api/products`);
+      console.log("🔄 Fetching products from:", `${ApiUrl}/api/products`);
+      const response = await axios.get(`${ApiUrl}/api/products`, {
+        timeout: 10000
+      });
       
-      console.log("=== FULL API RESPONSE ===");
-      console.log("Response data:", response.data);
+      let productsData = [];
       
-      // Check if data is in response.data or response.data.data
-      let productsData = response.data;
-      
-      if (response.data && response.data.data && Array.isArray(response.data.data)) {
+      if (response.data && response.data.success && Array.isArray(response.data.data)) {
         productsData = response.data.data;
-      } else if (!Array.isArray(response.data)) {
+      } else if (Array.isArray(response.data)) {
+        productsData = response.data;
+      } else {
         console.error("Unexpected response structure:", response.data);
         productsData = [];
       }
       
-      // Ensure each product has a unique ID
       const productsWithIds = productsData.map((product, index) => {
-        // Try to get ID from various possible fields
         const id = product._id || product.id || `product-${index}-${Date.now()}`;
-        
         return {
           ...product,
-          id: id // Ensure id property exists
+          id: id
         };
       });
       
       setProducts(productsWithIds);
       
-      console.log("=== PROCESSED PRODUCTS ===");
+      console.log("=== CLOUDINARY PRODUCTS LOADED ===");
+      console.log(`Total products: ${productsWithIds.length}`);
       productsWithIds.forEach((product, index) => {
-        console.log(`${index + 1}. ID: ${product.id}, Name: ${product.product_name}, Image: ${product.image_url}`);
+        console.log(`${index + 1}. ${product.product_name}`);
+        if (product.image_url) console.log(`   Image: ${product.image_url.substring(0, 60)}...`);
+        if (product.video_url) console.log(`   Video: ${product.video_url.substring(0, 60)}...`);
       });
       
     } catch (error) {
-      console.error('Error fetching products:', error);
-      setProducts([]); // Set empty array on error
+      console.error('❌ Error fetching products:', error);
+      alert(`Failed to load products: ${error.message}`);
+      setProducts([]);
     } finally {
       setLoading(false);
     }
@@ -104,48 +97,113 @@ const AdminDashboard = () => {
     const file = e.target.files[0];
     if (!file) return;
 
+    // Validate file size
     if (file.size > 50 * 1024 * 1024) {
       alert('File size too large. Maximum size is 50MB.');
       return;
     }
 
+    // Validate file type
+    const allowedImageTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif'];
+    const allowedVideoTypes = ['video/mp4', 'video/mov', 'video/avi', 'video/webm', 'video/x-matroska'];
+    const allowedTypes = [...allowedImageTypes, ...allowedVideoTypes];
+    
+    if (!allowedTypes.includes(file.type)) {
+      alert('Invalid file type. Please upload images (JPEG, PNG, GIF) or videos (MP4, MOV, AVI, WEBM).');
+      return;
+    }
+
     setUploading(true);
+    setUploadProgress(0);
+    
     const uploadData = new FormData();
-    uploadData.append('file', file);
+    
+    // Create a clean filename to avoid Unicode issues
+    const timestamp = Date.now();
+    const randomString = Math.random().toString(36).substring(2, 8);
+    const fileExtension = file.name.split('.').pop().toLowerCase().substring(0, 5);
+    const cleanFileName = `${type}-${timestamp}-${randomString}.${fileExtension}`;
+    
+    // Use the cleaned filename
+    uploadData.append('file', file, cleanFileName);
 
     try {
-      console.log("🔼 Starting file upload...", file.name);
+      console.log("🔼 Uploading to Cloudinary:", {
+        originalName: file.name,
+        cleanName: cleanFileName,
+        type: file.type,
+        size: (file.size / (1024 * 1024)).toFixed(2) + 'MB'
+      });
       
       const response = await axios.post(`${ApiUrl}/api/upload`, uploadData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
-        timeout: 60000,
+        timeout: 300000, // 5 minutes timeout for large files
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const percentCompleted = Math.round(
+              (progressEvent.loaded * 100) / progressEvent.total
+            );
+            setUploadProgress(percentCompleted);
+            console.log(`Upload progress: ${percentCompleted}%`);
+          }
+        }
       });
       
-      console.log("✅ Upload response:", response.data);
+      console.log("✅ Cloudinary response:", response.data);
       
-      if (response.data.success) {
-        // Store the relative path returned from server
+      if (response.data.success && response.data.filePath) {
         setFormData(prev => ({
           ...prev,
           [type === 'image' ? 'image_url' : 'video_url']: response.data.filePath
         }));
-        alert('File uploaded successfully!');
+        alert(`✅ ${type} uploaded to Cloudinary successfully!\nURL: ${response.data.filePath.substring(0, 80)}...`);
       } else {
-        throw new Error(response.data.error || 'Upload failed');
+        throw new Error(response.data.error || 'Upload failed - no file path returned');
       }
     } catch (error) {
-      console.error('❌ Error uploading file:', error);
-      alert(`Upload error: ${error.response?.data?.error || error.message}`);
+      console.error('❌ Cloudinary upload error:', error);
+      
+      let errorMessage = 'Upload failed. ';
+      
+      if (error.code === 'ECONNABORTED') {
+        errorMessage += 'Request timeout. Try a smaller file or check your connection.';
+      } else if (error.response) {
+        // Server responded with error status
+        errorMessage += `Server error (${error.response.status}): `;
+        if (error.response.data?.error) {
+          errorMessage += error.response.data.error;
+          if (error.response.data.details) {
+            errorMessage += `\nDetails: ${error.response.data.details.substring(0, 200)}`;
+          }
+        } else {
+          errorMessage += error.response.statusText;
+        }
+      } else if (error.request) {
+        errorMessage += 'No response from server. Check if backend is running.';
+        errorMessage += `\nMake sure ${ApiUrl}/api/upload is accessible.`;
+      } else {
+        errorMessage += error.message;
+      }
+      
+      alert(errorMessage);
     } finally {
       setUploading(false);
-      e.target.value = '';
+      setUploadProgress(0);
+      e.target.value = ''; // Reset file input
     }
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    
+    // Validate required fields
+    if (!formData.product_name || !formData.price_new || !formData.brand || !formData.category) {
+      alert('Please fill in all required fields: Product Name, Price, Brand, and Category');
+      return;
+    }
+    
     try {
       const submitData = {
         ...formData,
@@ -153,41 +211,70 @@ const AdminDashboard = () => {
       };
 
       if (editingProduct) {
-        await axios.put(`${ApiUrl}/api/products/${editingProduct.id}`, submitData);
+        console.log("📝 Updating product:", editingProduct.id);
+        const response = await axios.put(`${ApiUrl}/api/products/${editingProduct.id}`, submitData, {
+          timeout: 10000
+        });
+        console.log("✅ Update response:", response.data);
+        alert('✅ Product updated successfully!');
       } else {
-        await axios.post(`${ApiUrl}/api/products`, submitData);
+        console.log("➕ Creating new product");
+        const response = await axios.post(`${ApiUrl}/api/products`, submitData, {
+          timeout: 10000
+        });
+        console.log("✅ Create response:", response.data);
+        alert('✅ Product added successfully!');
       }
+      
       fetchProducts();
       resetForm();
-      alert(editingProduct ? 'Product updated successfully!' : 'Product added successfully!');
     } catch (error) {
-      console.error('Error saving product:', error);
-      alert('Error saving product: ' + (error.response?.data?.error || error.message));
+      console.error('❌ Error saving product:', error);
+      let errorMessage = 'Error saving product: ';
+      
+      if (error.response?.data?.error) {
+        errorMessage += error.response.data.error;
+      } else {
+        errorMessage += error.message;
+      }
+      
+      alert(errorMessage);
     }
   };
 
   const handleEdit = (product) => {
     setEditingProduct(product);
     setFormData({
-      product_name: product.product_name,
-      price_new: product.price_new,
-      brand: product.brand,
-      category: product.category,
+      product_name: product.product_name || '',
+      price_new: product.price_new || '',
+      brand: product.brand || '',
+      category: product.category || '',
       description: product.description || '',
       image_url: product.image_url || '',
       video_url: product.video_url || ''
     });
     setShowForm(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleDelete = async (productId) => {
-    if (window.confirm('Are you sure you want to delete this product?')) {
+    if (!productId || productId === 'undefined') {
+      alert('Cannot delete product: Invalid product ID');
+      return;
+    }
+    
+    const confirmDelete = window.confirm('Are you sure you want to delete this product? This will also delete associated files from Cloudinary.');
+    
+    if (confirmDelete) {
       try {
-        await axios.delete(`${ApiUrl}/api/products/${productId}`);
+        console.log("🗑️ Deleting product:", productId);
+        await axios.delete(`${ApiUrl}/api/products/${productId}`, {
+          timeout: 10000
+        });
         fetchProducts();
-        alert('Product deleted successfully!');
+        alert('✅ Product deleted successfully!');
       } catch (error) {
-        console.error('Error deleting product:', error);
+        console.error('❌ Error deleting product:', error);
         alert('Error deleting product: ' + (error.response?.data?.error || error.message));
       }
     }
@@ -205,6 +292,7 @@ const AdminDashboard = () => {
     });
     setEditingProduct(null);
     setShowForm(false);
+    setUploadProgress(0);
   };
 
   const playVideo = (productId, videoUrl) => {
@@ -215,34 +303,74 @@ const AdminDashboard = () => {
     }
   };
 
-  // Helper function to generate a unique key for each product
   const generateProductKey = (product, index) => {
-    // Try to use the product ID first
     if (product.id && product.id !== 'undefined') {
       return product.id;
     }
     
-    // Fallback to a combination of properties
     if (product.product_name && product.image_url) {
-      return `${product.product_name}-${product.image_url}-${index}`;
+      return `${product.product_name}-${product.image_url.substring(0, 20)}-${index}`;
     }
     
-    // Final fallback - index with timestamp
     return `product-${index}-${Date.now()}`;
+  };
+
+  const testCloudinaryConnection = async () => {
+    try {
+      const response = await axios.get(`${ApiUrl}/api/upload/test`, {
+        timeout: 5000
+      });
+      if (response.data.success) {
+        alert('✅ Cloudinary connection successful!');
+      } else {
+        alert('⚠️ Cloudinary test failed: ' + response.data.error);
+      }
+    } catch (error) {
+      alert('❌ Cloudinary test failed: ' + error.message);
+    }
   };
 
   return (
     <div className="admin-dashboard">
       <div className="container">
         <div className="admin-header">
-          <h1>Admin Dashboard</h1>
-          <button 
-            className="btn btn-primary"
-            onClick={() => setShowForm(true)}
-          >
-            Add New Product
-          </button>
+          <div className="header-content">
+            <h1>Admin Dashboard</h1>
+            <p className="subtitle">Manage your products with Cloudinary storage</p>
+          </div>
+          <div className="header-controls">
+            <div className="storage-info">
+              <span className="cloudinary-badge" onClick={testCloudinaryConnection} title="Click to test connection">
+                ☁️ Cloudinary Storage
+              </span>
+              <span className="api-url">API: {ApiUrl}</span>
+            </div>
+            <button 
+              className="btn btn-primary"
+              onClick={() => setShowForm(true)}
+              disabled={uploading}
+            >
+              {uploading ? 'Uploading...' : 'Add New Product'}
+            </button>
+          </div>
         </div>
+
+        {/* Upload Progress Bar */}
+        {uploading && (
+          <div className="upload-progress">
+            <div className="progress-bar">
+              <div 
+                className="progress-fill" 
+                style={{ width: `${uploadProgress}%` }}
+              >
+                {uploadProgress}%
+              </div>
+            </div>
+            <p className="progress-text">
+              Uploading to Cloudinary... {uploadProgress}%
+            </p>
+          </div>
+        )}
 
         {/* Product Form Modal */}
         {showForm && (
@@ -260,7 +388,9 @@ const AdminDashboard = () => {
             >
               <div className="modal-header">
                 <h2>{editingProduct ? 'Edit Product' : 'Add New Product'}</h2>
-                <button className="close-btn" onClick={resetForm}>×</button>
+                <button className="close-btn" onClick={resetForm} disabled={uploading}>
+                  ×
+                </button>
               </div>
               
               <form onSubmit={handleSubmit} className="product-form">
@@ -273,11 +403,13 @@ const AdminDashboard = () => {
                       value={formData.product_name}
                       onChange={handleInputChange}
                       required
+                      disabled={uploading}
+                      placeholder="Enter product name"
                     />
                   </div>
                   
                   <div className="form-group">
-                    <label>Price *</label>
+                    <label>Price ($) *</label>
                     <input
                       type="number"
                       name="price_new"
@@ -286,6 +418,8 @@ const AdminDashboard = () => {
                       step="0.01"
                       min="0"
                       required
+                      disabled={uploading}
+                      placeholder="0.00"
                     />
                   </div>
                 </div>
@@ -298,6 +432,7 @@ const AdminDashboard = () => {
                       value={formData.brand}
                       onChange={handleInputChange}
                       required
+                      disabled={uploading}
                     >
                       <option value="">Select Brand</option>
                       {brands.map(brand => (
@@ -313,6 +448,7 @@ const AdminDashboard = () => {
                       value={formData.category}
                       onChange={handleInputChange}
                       required
+                      disabled={uploading}
                     >
                       <option value="">Select Category</option>
                       {categories.map(cat => (
@@ -330,51 +466,89 @@ const AdminDashboard = () => {
                     onChange={handleInputChange}
                     rows="4"
                     placeholder="Enter product description..."
+                    disabled={uploading}
+                    maxLength="1000"
                   />
+                  <div className="char-count">
+                    {formData.description.length}/1000 characters
+                  </div>
                 </div>
 
                 <div className="form-row">
                   <div className="form-group">
                     <label>Image</label>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => handleFileUpload(e, 'image')}
-                      className="file-input"
-                    />
+                    <div className="file-upload-wrapper">
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => handleFileUpload(e, 'image')}
+                        className="file-input"
+                        id="image-upload"
+                        disabled={uploading}
+                      />
+                      <label htmlFor="image-upload" className={`file-label ${uploading ? 'disabled' : ''}`}>
+                        {uploading ? 'Uploading...' : 'Choose Image'}
+                      </label>
+                      <small className="file-hint">Max 50MB, JPG/PNG/GIF</small>
+                    </div>
                     {formData.image_url && (
                       <div className="image-preview">
                         <img 
-                          src={getFullFileUrl(formData.image_url)} 
+                          src={formData.image_url} 
                           alt="Preview" 
                           onError={(e) => {
-                            console.error('Image failed to load:', formData.image_url);
-                            e.target.style.display = 'none';
+                            console.error('Cloudinary image failed to load:', formData.image_url);
+                            e.target.src = 'https://via.placeholder.com/300x200?text=Image+Error';
                           }}
                         />
-                        <small>Stored path: {formData.image_url}</small>
+                        <small>✓ Cloudinary Image</small>
+                        <button 
+                          type="button" 
+                          className="btn-clear"
+                          onClick={() => setFormData(prev => ({ ...prev, image_url: '' }))}
+                          disabled={uploading}
+                        >
+                          Remove
+                        </button>
                       </div>
                     )}
                   </div>
                   
                   <div className="form-group">
                     <label>Video</label>
-                    <input
-                      type="file"
-                      accept="video/*"
-                      onChange={(e) => handleFileUpload(e, 'video')}
-                      className="file-input"
-                    />
+                    <div className="file-upload-wrapper">
+                      <input
+                        type="file"
+                        accept="video/*"
+                        onChange={(e) => handleFileUpload(e, 'video')}
+                        className="file-input"
+                        id="video-upload"
+                        disabled={uploading}
+                      />
+                      <label htmlFor="video-upload" className={`file-label ${uploading ? 'disabled' : ''}`}>
+                        {uploading ? 'Uploading...' : 'Choose Video'}
+                      </label>
+                      <small className="file-hint">Max 50MB, MP4/MOV/AVI</small>
+                    </div>
                     {formData.video_url && (
                       <div className="video-preview">
-                        <p>Video URL: {formData.video_url}</p>
+                        <p>✓ Cloudinary Video</p>
                         <video 
                           controls 
                           style={{ maxWidth: '200px', maxHeight: '150px' }}
+                          preload="metadata"
                         >
-                          <source src={getFullFileUrl(formData.video_url)} type="video/mp4" />
+                          <source src={formData.video_url} type="video/mp4" />
                           Your browser does not support the video tag.
                         </video>
+                        <button 
+                          type="button" 
+                          className="btn-clear"
+                          onClick={() => setFormData(prev => ({ ...prev, video_url: '' }))}
+                          disabled={uploading}
+                        >
+                          Remove
+                        </button>
                       </div>
                     )}
                   </div>
@@ -386,9 +560,14 @@ const AdminDashboard = () => {
                     className="btn btn-primary"
                     disabled={uploading}
                   >
-                    {uploading ? 'Uploading...' : (editingProduct ? 'Update' : 'Create')} Product
+                    {uploading ? 'Uploading...' : (editingProduct ? 'Update Product' : 'Create Product')}
                   </button>
-                  <button type="button" className="btn btn-secondary" onClick={resetForm}>
+                  <button 
+                    type="button" 
+                    className="btn btn-secondary" 
+                    onClick={resetForm}
+                    disabled={uploading}
+                  >
                     Cancel
                   </button>
                 </div>
@@ -399,26 +578,46 @@ const AdminDashboard = () => {
 
         {/* Products List */}
         <div className="products-section">
-          <h2>Products ({products.length})</h2>
+          <div className="section-header">
+            <h2>Products ({products.length})</h2>
+            <button 
+              className="btn btn-refresh"
+              onClick={fetchProducts}
+              disabled={loading}
+            >
+              {loading ? 'Loading...' : '🔄 Refresh'}
+            </button>
+          </div>
+          
           {loading ? (
-            <div className="loading">Loading products...</div>
+            <div className="loading">
+              <div className="spinner"></div>
+              <p>Loading products from Cloudinary...</p>
+            </div>
           ) : products.length === 0 ? (
             <div className="no-products">
-              <p>No products found. Add your first product!</p>
+              <div className="empty-state">
+                <p>📭 No products found</p>
+                <button 
+                  className="btn btn-primary"
+                  onClick={() => setShowForm(true)}
+                >
+                  Add Your First Product
+                </button>
+              </div>
             </div>
           ) : (
             <div className="products-grid">
               {products.map((product, index) => {
-                // Generate a unique key for each product
                 const uniqueKey = generateProductKey(product, index);
                 
                 return (
                   <motion.div 
-                    key={uniqueKey}  // FIXED: Using unique key instead of product.id
+                    key={uniqueKey}
                     className="admin-product-card"
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.3 }}
+                    transition={{ duration: 0.3, delay: index * 0.05 }}
                     layout
                   >
                     <div className="product-media">
@@ -429,7 +628,7 @@ const AdminDashboard = () => {
                             autoPlay
                             style={{ width: '100%', height: '200px', objectFit: 'cover' }}
                           >
-                            <source src={getFullFileUrl(product.video_url)} type="video/mp4" />
+                            <source src={product.video_url} type="video/mp4" />
                             Your browser does not support the video tag.
                           </video>
                           <button 
@@ -443,12 +642,12 @@ const AdminDashboard = () => {
                       ) : product.image_url ? (
                         <div className="image-container">
                           <img 
-                            src={getFullFileUrl(product.image_url)} 
+                            src={product.image_url} 
                             alt={product.product_name}
                             className="product-image"
                             onError={(e) => {
-                              console.error('Failed to load image for product:', product.product_name, 'URL:', product.image_url);
-                              e.target.src = '/placeholder-image.jpg';
+                              console.error('Failed to load Cloudinary image for:', product.product_name);
+                              e.target.src = 'https://via.placeholder.com/300x200?text=Image+Error';
                               e.target.alt = 'Image not available';
                             }}
                           />
@@ -463,8 +662,8 @@ const AdminDashboard = () => {
                         </div>
                       ) : (
                         <div className="no-media">
-                          <div className="no-image">No Image</div>
-                          {product.video_url && (
+                          <div className="no-image">📷 No Image</div>
+                          {product.video_url ? (
                             <button 
                               className="btn btn-primary btn-small"
                               onClick={() => playVideo(uniqueKey, product.video_url)}
@@ -472,6 +671,8 @@ const AdminDashboard = () => {
                             >
                               ▶ Play Video
                             </button>
+                          ) : (
+                            <div className="no-video">No Media</div>
                           )}
                         </div>
                       )}
@@ -479,20 +680,32 @@ const AdminDashboard = () => {
                     
                     <div className="product-info">
                       <h3>{product.product_name}</h3>
-                      <p className="product-brand">{product.brand}</p>
-                      <p className="product-category">{product.category}</p>
-                      <p className="product-price">${product.price_new}</p>
-                      <p className="product-id">ID: {product.id || 'N/A'}</p>
-                      
-                      {product.video_url && (
-                        <div className="video-info">
-                          <small>Video Available</small>
-                        </div>
-                      )}
+                      <div className="product-meta">
+                        <span className="product-brand">Brand: {product.brand}</span>
+                        <span className="product-category">Category: {product.category}</span>
+                      </div>
+                      <p className="product-price">${parseFloat(product.price_new).toFixed(2)}</p>
                       
                       {product.description && (
-                        <p className="product-description">{product.description}</p>
+                        <p className="product-description">
+                          {product.description.length > 100 
+                            ? `${product.description.substring(0, 100)}...` 
+                            : product.description}
+                        </p>
                       )}
+                      
+                      <div className="product-urls">
+                        {product.image_url && (
+                          <small title={product.image_url}>
+                            Image: {product.image_url.substring(0, 40)}...
+                          </small>
+                        )}
+                        {product.video_url && (
+                          <small title={product.video_url}>
+                            Video: {product.video_url.substring(0, 40)}...
+                          </small>
+                        )}
+                      </div>
                     </div>
                     
                     <div className="product-actions">
@@ -500,14 +713,14 @@ const AdminDashboard = () => {
                         className="btn btn-edit"
                         onClick={() => handleEdit(product)}
                       >
-                        Edit
+                        ✏️ Edit
                       </button>
                       <button 
                         className="btn btn-delete"
                         onClick={() => handleDelete(product.id)}
                         disabled={!product.id || product.id === 'undefined'}
                       >
-                        Delete
+                        🗑️ Delete
                       </button>
                     </div>
                   </motion.div>
@@ -516,6 +729,22 @@ const AdminDashboard = () => {
             </div>
           )}
         </div>
+
+        {/* Debug Info (Development only) */}
+        {process.env.NODE_ENV === 'development' && (
+          <div className="debug-info">
+            <details>
+              <summary>Debug Information</summary>
+              <pre>
+                API URL: {ApiUrl}
+                Total Products: {products.length}
+                Uploading: {uploading ? 'Yes' : 'No'}
+                Show Form: {showForm ? 'Yes' : 'No'}
+                Editing: {editingProduct ? editingProduct.id : 'None'}
+              </pre>
+            </details>
+          </div>
+        )}
       </div>
     </div>
   );
